@@ -878,6 +878,7 @@ fn gpu_row(g: &GpuInfo, peer_count: usize) -> Row<'static> {
     let mut cells = vec![
         Cell::from(Text::from(Span::raw(format!("{}", g.index)))),
         Cell::from(Text::from(Span::raw(g.name.clone()))),
+        Cell::from(Text::from("")),
     ];
     match g.p2p.as_ref() {
         Some(paths) => {
@@ -917,6 +918,7 @@ fn gpu_row(g: &GpuInfo, peer_count: usize) -> Row<'static> {
             }
         }
     }
+    cells.push(Cell::from(Text::from("")));
     let temp = match g.temp {
         Some(t) => Span::styled(format!("{t:>5.0}"), temp_style(t)),
         None => Span::styled(format!("{:>5}", "—"), dim()),
