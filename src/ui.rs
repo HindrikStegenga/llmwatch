@@ -347,9 +347,7 @@ fn percentile_line(
         _ => [None; 8],
     };
     for (label, value) in labels.iter().zip(values.iter()) {
-        let vs = value
-            .map(|v| fmt_count(v))
-            .unwrap_or_else(|| "-".to_string());
+        let vs = value.map(fmt_count).unwrap_or_else(|| "-".to_string());
         spans.push(Span::styled(format!("{label:<3} "), dim()));
         spans.push(Span::styled(
             format!("{vs:>vw$}"),
