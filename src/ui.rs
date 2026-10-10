@@ -280,6 +280,7 @@ fn rate_chart(
     f.render_widget(chart, rows[0]);
 
     let w = inner.width as usize;
+    let tag_w = if pts_c.is_empty() { 0 } else { "compute+cached".len() };
     let mut samples: Vec<f64> = raw.iter().filter(|v| **v > 0.0).copied().collect();
     let have = !samples.is_empty();
     if have {
@@ -295,6 +296,7 @@ fn rate_chart(
             have.then_some(&samples[..]),
             color,
             ptag,
+            tag_w,
             w,
         )),
         rows[1],
@@ -310,6 +312,7 @@ fn rate_chart(
                 chave.then_some(&csamples[..]),
                 WARN,
                 Some("computed"),
+                tag_w,
                 w,
             )),
             rows[2],
@@ -321,17 +324,18 @@ fn percentile_line(
     samples: Option<&[f64]>,
     color: Color,
     tag: Option<&str>,
+    tag_width: usize,
     width: usize,
 ) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut used = 0usize;
     if let Some(tag) = tag {
-        let t = format!(" {tag} ");
-        used += t.chars().count();
+        let t = format!(" {:<tw$} ", tag, tw = tag_width);
+        used += tag_width + 2;
         spans.push(Span::styled(t, bold(color)));
     }
     let col = width.saturating_sub(used) / 8;
-    let vw = col.saturating_sub(4);
+    let vw = col.saturating_sub(5);
     let labels = ["min", "p25", "p50", "p75", "p90", "p95", "p99", "max"];
     let values: [Option<f64>; 8] = match samples {
         Some(s) if !s.is_empty() => [
@@ -348,7 +352,7 @@ fn percentile_line(
     };
     for (label, value) in labels.iter().zip(values.iter()) {
         let vs = value.map(fmt_count).unwrap_or_else(|| "-".to_string());
-        spans.push(Span::styled(format!("{label:<3} "), dim()));
+        spans.push(Span::styled(format!("{label:<3}  "), dim()));
         spans.push(Span::styled(
             format!("{vs:>vw$}"),
             Style::default().fg(color),
