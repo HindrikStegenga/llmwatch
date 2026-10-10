@@ -5,6 +5,15 @@ use std::time::{Duration, Instant};
 use crate::prom::{self, HistStats};
 use crate::state::{AppState, Rates, SpecMetrics, SpecRates, VllmMetrics};
 
+/// Generation throughput below which token flow is considered a starved
+/// trickle — a concurrent decode squeezed in between chunks of a big prefill —
+/// rather than real progress. A trickle must not keep the prefill badge quiet.
+const GEN_PROGRESS_FLOOR: f64 = 20.0;
+
+fn is_progress(prompt_tps: f64, gen_tps: f64) -> bool {
+    prompt_tps > 0.5 || gen_tps > GEN_PROGRESS_FLOOR
+}
+
 pub async fn fetch_loop(state: Arc<AppState>, client: reqwest::Client, url: String) {
     loop {
         if !state.is_paused() {
@@ -44,6 +53,11 @@ fn update(state: &AppState, metrics: VllmMetrics, names: Vec<String>) {
     if vs.last_progress.is_none() {
         vs.last_progress = Some(now);
     }
+    // A request starting after an idle stretch would otherwise inherit the
+    // idle time as "prefill" — restart the clock when the engine goes busy.
+    if metrics.running > 0.0 && vs.metrics.as_ref().is_none_or(|m| m.running <= 0.0) {
+        vs.last_progress = Some(now);
+    }
     // The engine's token counters are lump-sum (updated once per completed
     // request, not per chunk), so per-poll deltas spike to the full prompt
     // size. Rate everything over a sliding window instead.
@@ -81,9 +95,9 @@ fn update(state: &AppState, metrics: VllmMetrics, names: Vec<String>) {
         push(&mut vs.prompt_hist, rates.prompt_tps);
         push(&mut vs.gen_hist, rates.gen_tps);
         push_history(&mut vs, now, rates, compute_push);
-        if rates.prompt_tps + rates.gen_tps > 0.5 {
-            vs.last_progress = Some(now);
-        }
+            if is_progress(rates.prompt_tps, rates.gen_tps) {
+                vs.last_progress = Some(now);
+            }
     }
     if metrics.spec.counters
         && let (Some(d), Some(a)) = (metrics.spec.draft, metrics.spec.accepted)
@@ -434,6 +448,17 @@ mod tests {
         assert!(delta_rate(now, 0.0, now, 10.0).is_none());
         let later = now + Duration::from_millis(200);
         assert_eq!(delta_rate(now, 10.0, later, 4.0).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn trickle_does_not_count_as_progress() {
+        // A big prefill starving a concurrent decode to a few tok/s:
+        assert!(!is_progress(0.0, 6.0));
+        // Real decode, and a prompt lump landing:
+        assert!(is_progress(0.0, 80.0));
+        assert!(is_progress(500.0, 0.0));
+        // Dead silence:
+        assert!(!is_progress(0.0, 0.0));
     }
 
     #[test]
