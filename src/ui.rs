@@ -86,20 +86,27 @@ fn draw_header(f: &mut Frame, state: &AppState, area: Rect) {
                 .unwrap_or_else(|| "off (--ssh host)".into()),
         ),
     ];
-    let mut l2 = vec![
-        Span::styled(format!(" {status} "), bold(color)),
+    let mut left = vec![
         Span::raw(match vs.last_ok.map(|t| t.elapsed().as_secs_f64()) {
-            Some(age) => format!("  ·  updated {age:.1}s ago"),
-            None => "  ·  never updated".to_string(),
+            Some(age) => format!(" updated {age:.1}s ago"),
+            None => " never updated".to_string(),
         }),
         Span::raw(format!("  ·  interval {:.1}s", state.interval_secs())),
     ];
     if let Some(err) = &vs.last_err {
-        l2.push(Span::styled(
+        left.push(Span::styled(
             format!("  ·  {err}"),
             Style::default().fg(CRIT),
         ));
     }
+    let left_len: usize = left.iter().map(|s| s.content.chars().count()).sum();
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let pad = inner_w
+        .saturating_sub(left_len + status.chars().count() + 2)
+        .max(1);
+    let mut l2 = left;
+    l2.push(Span::raw(" ".repeat(pad)));
+    l2.push(Span::styled(format!(" {status} "), bold(color)));
     let p = Paragraph::new(vec![Line::from(l1), Line::from(l2)]).block(
         Block::bordered().title(Span::styled(" vLLM monitor ", bold(Color::White))),
     );
