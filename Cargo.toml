@@ -2,6 +2,7 @@
 name = "llmwatch"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 description = "Terminal UI monitor for a remote vLLM server and its GPUs"
 repository = "https://github.com/HindrikStegenga/llmwatch"
 
