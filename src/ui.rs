@@ -18,7 +18,7 @@ const ACCENT: Color = Color::Rgb(189, 147, 249);
 pub fn draw(f: &mut Frame, state: &AppState) {
     let area = f.area();
     let outer = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(4),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
