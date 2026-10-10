@@ -809,13 +809,14 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
         Constraint::Min(8),
         Constraint::Length(5),
         Constraint::Length(5),
-        Constraint::Length(17),
+        Constraint::Length(18),
         Constraint::Length(5),
         Constraint::Length(13),
         Constraint::Length(6),
         Constraint::Length(13),
         Constraint::Length(6),
     ];
+
     let rows = gs.gpus.iter().map(gpu_row);
     let table = Table::new(rows, widths)
         .block(block)
