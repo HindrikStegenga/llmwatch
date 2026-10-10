@@ -802,6 +802,7 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
         Cell::from(Text::from(Span::styled(format!("{:>13}", "Power"), bold_hdr))),
         Cell::from(Text::from(Span::styled(format!("{:>6}", "PCIe"), bold_hdr))),
         Cell::from(Text::from(Span::styled(format!("{:>13}", "RX/TX"), bold_hdr))),
+        Cell::from(Text::from(Span::styled(format!("{:>6}", "P2P"), bold_hdr))),
     ]);
     let widths = [
         Constraint::Length(4),
@@ -813,6 +814,7 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
         Constraint::Length(13),
         Constraint::Length(6),
         Constraint::Length(13),
+        Constraint::Length(6),
     ];
     let rows = gs.gpus.iter().map(gpu_row);
     let table = Table::new(rows, widths)
@@ -869,6 +871,14 @@ fn gpu_row(g: &GpuInfo) -> Row<'static> {
         ]),
         _ => Line::from(Span::styled(format!("{:>13}", "—"), dim())),
     };
+    let p2p = match (g.nvlink.as_deref(), g.p2p.as_deref()) {
+        (Some(nv), _) => Span::styled(format!("{nv:>6}"), Style::default().fg(ACCENT)),
+        (None, Some(p)) => {
+            let color = if p == "PIX" || p == "PXB" { OK } else { WARN };
+            Span::styled(format!("{p:>6}"), Style::default().fg(color))
+        }
+        _ => Span::styled(format!("{:>6}", "—"), dim()),
+    };
     Row::new(vec![
         Cell::from(Text::from(Span::raw(format!("{}", g.index)))),
         Cell::from(Text::from(Span::raw(g.name.clone()))),
@@ -879,6 +889,7 @@ fn gpu_row(g: &GpuInfo) -> Row<'static> {
         Cell::from(Text::from(power)),
         Cell::from(Text::from(pcie)),
         Cell::from(Text::from(link)),
+        Cell::from(Text::from(p2p)),
     ])
 }
 

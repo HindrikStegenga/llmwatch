@@ -7,7 +7,8 @@ use crate::state::{AppState, GpuInfo};
 
 const QUERY_BASE: &str = "index,name,temperature.gpu,temperature.memory,memory.used,memory.total,utilization.gpu,power.draw,power.limit,fan.speed,pcie.link.gen.current,pcie.link.width.current";
 const QUERY_PLAIN: &str = "index,name,temperature.gpu,temperature.memory,memory.used,memory.total,utilization.gpu,power.draw,power.limit,fan.speed";
-const Q_MARKER: &str = "---LLMWATCH---";
+const Q_MARKER: &str = "---LLMWATCH-Q---";
+const T_MARKER: &str = "---LLMWATCH-T---";
 
 pub async fn fetch_loop(state: Arc<AppState>, host: String, timeout_secs: f64) {
     loop {
@@ -36,7 +37,7 @@ pub async fn fetch_loop(state: Arc<AppState>, host: String, timeout_secs: f64) {
 async fn fetch(host: &str, timeout_secs: f64) -> anyhow::Result<Vec<GpuInfo>> {
     let script = |query: &str| {
         format!(
-            "nvidia-smi --query-gpu={query} --format=csv,noheader,nounits && echo '{Q_MARKER}' && nvidia-smi -q"
+            "nvidia-smi --query-gpu={query} --format=csv,noheader,nounits && echo '{Q_MARKER}' && nvidia-smi -q && echo '{T_MARKER}' && (nvidia-smi topo -m || true)"
         )
     };
     match run_ssh(host, &script(QUERY_BASE), timeout_secs).await {
@@ -75,11 +76,16 @@ async fn run_ssh(host: &str, script: &str, timeout_secs: f64) -> anyhow::Result<
 }
 
 pub fn parse(text: &str) -> anyhow::Result<Vec<GpuInfo>> {
-    let (csv, q) = match text.split_once(Q_MARKER) {
-        Some((c, q)) => (c, q),
+    let (csv, rest) = match text.split_once(Q_MARKER) {
+        Some((c, r)) => (c, r),
         None => (text, ""),
     };
+    let (q, topo_text) = match rest.split_once(T_MARKER) {
+        Some((q, t)) => (q, t),
+        None => (rest, ""),
+    };
     let pcie = parse_q_pcie(q);
+    let topo = parse_topo(topo_text);
     let mut gpus = Vec::new();
     for (i, line) in csv.lines().enumerate() {
         let line = line.trim();
@@ -91,6 +97,7 @@ pub fn parse(text: &str) -> anyhow::Result<Vec<GpuInfo>> {
             anyhow::bail!("unexpected nvidia-smi output: {line}");
         }
         let link = pcie.get(i).copied().unwrap_or(PcieInfo::default());
+        let tp = topo.get(i).cloned().unwrap_or(TopoInfo::default());
         let (csv_gen, csv_width) = if fields.len() >= 12 {
             (num(fields[10]), num(fields[11]))
         } else {
@@ -110,6 +117,8 @@ pub fn parse(text: &str) -> anyhow::Result<Vec<GpuInfo>> {
             pcie_width: csv_width.or(link.width),
             pcie_rx: link.rx,
             pcie_tx: link.tx,
+            p2p: tp.path,
+            nvlink: tp.nvlink,
         });
     }
     Ok(gpus)
@@ -121,6 +130,91 @@ struct PcieInfo {
     width: Option<f64>,
     rx: Option<f64>,
     tx: Option<f64>,
+}
+
+#[derive(Default, Clone)]
+struct TopoInfo {
+    path: Option<String>,
+    nvlink: Option<String>,
+}
+
+fn parse_topo(text: &str) -> Vec<TopoInfo> {
+    fn rank(tok: &str) -> Option<u8> {
+        match tok {
+            "PIX" => Some(4),
+            "PXB" => Some(3),
+            "PHB" => Some(2),
+            "SYS" => Some(1),
+            _ => None,
+        }
+    }
+    let is_gpu_row = |t: &str| {
+        t.len() > 3 && t.starts_with("GPU") && t[3..].parse::<usize>().is_ok()
+    };
+    let mut ngpus = 0usize;
+    for line in text.lines() {
+        let tokens: Vec<&str> = line.split('\t').map(str::trim).collect();
+        if tokens.first().is_some_and(|t| t.is_empty()) {
+            let count = tokens.iter().filter(|t| is_gpu_row(t)).count();
+            if count > ngpus {
+                ngpus = count;
+            }
+        }
+    }
+    let mut out = vec![TopoInfo::default(); ngpus];
+    for line in text.lines() {
+        let tokens: Vec<&str> = line.split('\t').map(str::trim).collect();
+        let Some(first) = tokens.first() else {
+            continue;
+        };
+        if !is_gpu_row(first) {
+            continue;
+        }
+        let Ok(k) = first[3..].parse::<usize>() else {
+            continue;
+        };
+        if k >= ngpus {
+            continue;
+        }
+        let mut best_rank = 0u8;
+        let mut best_path: Option<String> = None;
+        let mut nv: Option<String> = None;
+        for j in 0..ngpus {
+            if j == k {
+                continue;
+            }
+            let Some(tok) = tokens.get(1 + j) else {
+                continue;
+            };
+            if *tok == "X" {
+                continue;
+            }
+            if let Some(n) = tok.strip_prefix("NV") {
+                if n.parse::<u8>().is_ok() {
+                    let cur = nv
+                        .as_deref()
+                        .and_then(|c| c.strip_prefix("NV"))
+                        .and_then(|c| c.parse::<u8>().ok())
+                        .unwrap_or(0);
+                    if n.parse::<u8>().unwrap_or(0) > cur {
+                        nv = Some(tok.to_string());
+                    }
+                }
+                continue;
+            }
+            if let Some(r) = rank(tok)
+                && r > best_rank
+            {
+                best_rank = r;
+                best_path = Some(tok.to_string());
+            }
+        }
+        out[k] = TopoInfo {
+            path: best_path,
+            nvlink: nv,
+        };
+    }
+    out
 }
 
 fn parse_q_pcie(q: &str) -> Vec<PcieInfo> {
@@ -202,8 +296,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_topo_matrix() {
+        let text = "\tGPU0\tGPU1\tGPU2\tGPU3\tCPU Affinity\tNUMA Affinity\nGPU0\t X \tPIX \tPHB \tSYS \t0-23\tN/A\nGPU1\tPIX \t X \tPHB \tSYS \t0-23\tN/A\nGPU2\tPHB \tPHB \t X \tSYS \t0-23\tN/A\nGPU3\tSYS \tSYS \tSYS \t X \t0-23\tN/A\nLegend:\n  X    = Self\n  SYS  = Path traversing multiple PCIe bridges\n";
+        let topo = parse_topo(text);
+        assert_eq!(topo.len(), 4);
+        assert_eq!(topo[0].path.as_deref(), Some("PIX"));
+        assert_eq!(topo[1].path.as_deref(), Some("PIX"));
+        assert_eq!(topo[2].path.as_deref(), Some("PHB"));
+        assert_eq!(topo[3].path.as_deref(), Some("SYS"));
+        assert_eq!(topo[0].nvlink, None);
+    }
+
+    #[test]
+    fn parses_topo_nvlink() {
+        let text = "\tGPU0\tGPU1\nGPU0\t X \tNV2\nGPU1\tNV2\t X \n";
+        let topo = parse_topo(text);
+        assert_eq!(topo[0].nvlink.as_deref(), Some("NV2"));
+        assert_eq!(topo[0].path, None);
+    }
+
+    #[test]
     fn parses_pcie_from_csv() {
-        let text = "0, NVIDIA H100 80GB HBM3, 52, 49, 41000, 81559, 96, 596.10, 700, 60, 5, 16\n---LLMWATCH---\nGPU 00000000:1b:00.0\n    PCIe\n        TX Throughput                    : 1100 KB/s\n        RX Throughput                    : 3200 KB/s\n";
+        let text = "0, NVIDIA H100 80GB HBM3, 52, 49, 41000, 81559, 96, 596.10, 700, 60, 5, 16\n---LLMWATCH-Q---\nGPU 00000000:1b:00.0\n    PCIe\n        TX Throughput                    : 1100 KB/s\n        RX Throughput                    : 3200 KB/s\n";
         let gpus = parse(text).unwrap();
         assert_eq!(gpus[0].pcie_gen, Some(5.0));
         assert_eq!(gpus[0].pcie_width, Some(16.0));
@@ -213,7 +327,7 @@ mod tests {
 
     #[test]
     fn parses_pcie_fields_from_q() {
-        let text = "0, NVIDIA H100 80GB HBM3, 52, 49, 41000, 81559, 96, 596.10, 700, 60\n1, NVIDIA A100-SXM4-40GB, 71, 68, 32000, 40960, 100, 302.10, 400, 50\n---LLMWATCH---\nGPU 00000000:1b:00.0\n\tProduct Name\t: NVIDIA H100 80GB HBM3\n    PCIe\n        Link Gen Current                 : Gen4\n        Link Width Current               : 16x\n        Max Link Gen                     : Gen5\n        Max Link Width                   : 16x\n        TX Throughput                    : 1100 KB/s\n        RX Throughput                    : 3200 KB/s\nGPU 00000000:1c:00.0\n    PCIe\n        Link Gen                         : Gen3\n        Link Width                       : 8x\n        TX Throughput                    : 0 KB/s\n        RX Throughput                    : N/A\n";
+        let text = "0, NVIDIA H100 80GB HBM3, 52, 49, 41000, 81559, 96, 596.10, 700, 60\n1, NVIDIA A100-SXM4-40GB, 71, 68, 32000, 40960, 100, 302.10, 400, 50\n---LLMWATCH-Q---\nGPU 00000000:1b:00.0\n\tProduct Name\t: NVIDIA H100 80GB HBM3\n    PCIe\n        Link Gen Current                 : Gen4\n        Link Width Current               : 16x\n        Max Link Gen                     : Gen5\n        Max Link Width                   : 16x\n        TX Throughput                    : 1100 KB/s\n        RX Throughput                    : 3200 KB/s\nGPU 00000000:1c:00.0\n    PCIe\n        Link Gen                         : Gen3\n        Link Width                       : 8x\n        TX Throughput                    : 0 KB/s\n        RX Throughput                    : N/A\n";
         let gpus = parse(text).unwrap();
         assert_eq!(gpus.len(), 2);
         assert_eq!(gpus[0].pcie_gen, Some(4.0));
