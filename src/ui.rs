@@ -335,7 +335,7 @@ fn percentile_line(
         spans.push(Span::styled(t, bold(color)));
     }
     let col = width.saturating_sub(used) / 8;
-    let vw = col.saturating_sub(5);
+    let vw = col.saturating_sub(6);
     let labels = ["min", "p25", "p50", "p75", "p90", "p95", "p99", "max"];
     let values: [Option<f64>; 8] = match samples {
         Some(s) if !s.is_empty() => [
@@ -352,9 +352,9 @@ fn percentile_line(
     };
     for (label, value) in labels.iter().zip(values.iter()) {
         let vs = value.map(fmt_count).unwrap_or_else(|| "-".to_string());
-        spans.push(Span::styled(format!("{label:<3}  "), dim()));
+        spans.push(Span::styled(format!("{label:<3}   "), dim()));
         spans.push(Span::styled(
-            format!("{vs:>vw$}"),
+            format!("{vs:<vw$}"),
             Style::default().fg(color),
         ));
     }
