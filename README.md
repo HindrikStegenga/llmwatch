@@ -6,7 +6,7 @@ llmwatch polls the vLLM Prometheus `/metrics` endpoint and renders live throughp
 speculative-decoding and API panels in the terminal, while GPU temperature, memory and PCIe stats
 are collected over SSH via `nvidia-smi`.
 
-![llmwatch TUI](visual.png)
+![llmwatch TUI](visual.png?v=2)
 
 ## Panels
 
