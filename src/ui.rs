@@ -804,8 +804,8 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
         .max()
         .unwrap_or(8)
         .clamp(8, 26);
-    let spacer_w = area
-        .width
+    let inner_w = area.width.saturating_sub(2);
+    let spacer_w = inner_w
         .saturating_sub(79 + name_w as u16 + 5 * peer_count as u16)
         / 2;
     let empty = || Cell::from(Text::from(""));
