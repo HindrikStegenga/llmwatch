@@ -802,7 +802,7 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
         Cell::from(Text::from(Span::styled(format!("{:>13}", "Power"), bold_hdr))),
         Cell::from(Text::from(Span::styled(format!("{:>6}", "PCIe"), bold_hdr))),
         Cell::from(Text::from(Span::styled(format!("{:>13}", "RX/TX"), bold_hdr))),
-        Cell::from(Text::from(Span::styled(format!("{:>6}", "P2P"), bold_hdr))),
+        Cell::from(Text::from(Span::styled(format!("{:>12}", "P2P"), bold_hdr))),
     ]);
     let widths = [
         Constraint::Length(4),
@@ -814,7 +814,7 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
         Constraint::Length(13),
         Constraint::Length(6),
         Constraint::Length(13),
-        Constraint::Length(6),
+        Constraint::Length(12),
     ];
 
     let rows = gs.gpus.iter().map(gpu_row);
@@ -872,13 +872,27 @@ fn gpu_row(g: &GpuInfo) -> Row<'static> {
         ]),
         _ => Line::from(Span::styled(format!("{:>13}", "—"), dim())),
     };
-    let p2p = match (g.nvlink.as_deref(), g.p2p.as_deref()) {
-        (Some(nv), _) => Span::styled(format!("{nv:>6}"), Style::default().fg(ACCENT)),
-        (None, Some(p)) => {
-            let color = if p == "PIX" || p == "PXB" { OK } else { WARN };
-            Span::styled(format!("{p:>6}"), Style::default().fg(color))
+    let p2p = match g.p2p.as_deref() {
+        Some(paths) => {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let pad = 12usize.saturating_sub(paths.chars().count());
+            spans.push(Span::raw(" ".repeat(pad)));
+            for (i, seg) in paths.split('/').enumerate() {
+                if i > 0 {
+                    spans.push(Span::styled("/", dim()));
+                }
+                let color = if seg.starts_with("NV") {
+                    ACCENT
+                } else if seg == "PIX" || seg == "PXB" {
+                    OK
+                } else {
+                    WARN
+                };
+                spans.push(Span::styled(seg.to_string(), Style::default().fg(color)));
+            }
+            Line::from(spans)
         }
-        _ => Span::styled(format!("{:>6}", "—"), dim()),
+        _ => Line::from(Span::styled(format!("{:>12}", "—"), dim())),
     };
     Row::new(vec![
         Cell::from(Text::from(Span::raw(format!("{}", g.index)))),

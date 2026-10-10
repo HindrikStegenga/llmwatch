@@ -140,8 +140,7 @@ fn build_gpus(csv: &str, q: &str, topo_text: Option<&str>) -> anyhow::Result<Vec
             pcie_width: csv_width.or(link.width),
             pcie_rx: link.rx,
             pcie_tx: link.tx,
-            p2p: tp.path,
-            nvlink: tp.nvlink,
+            p2p: tp.paths,
         });
     }
     Ok(gpus)
@@ -157,8 +156,7 @@ struct PcieInfo {
 
 #[derive(Default, Clone)]
 struct TopoInfo {
-    path: Option<String>,
-    nvlink: Option<String>,
+    paths: Option<String>,
 }
 
 fn strip_ansi(s: &str) -> String {
@@ -219,9 +217,7 @@ fn parse_topo(text: &str) -> Vec<TopoInfo> {
         if k >= ngpus {
             continue;
         }
-        let mut best_rank = 0u8;
-        let mut best_path: Option<String> = None;
-        let mut nv: Option<String> = None;
+        let mut parts: Vec<String> = Vec::new();
         for j in 0..ngpus {
             if j == k {
                 continue;
@@ -232,30 +228,18 @@ fn parse_topo(text: &str) -> Vec<TopoInfo> {
             if *tok == "X" {
                 continue;
             }
-            if let Some(n) = tok.strip_prefix("NV") {
-                if n.parse::<u8>().is_ok() {
-                    let cur = nv
-                        .as_deref()
-                        .and_then(|c| c.strip_prefix("NV"))
-                        .and_then(|c| c.parse::<u8>().ok())
-                        .unwrap_or(0);
-                    if n.parse::<u8>().unwrap_or(0) > cur {
-                        nv = Some(tok.to_string());
-                    }
-                }
+            if tok.starts_with("NV")
+                && tok[2..].parse::<u8>().is_ok()
+            {
+                parts.push(tok.to_string());
                 continue;
             }
-            if let Some(r) = rank(tok)
-                && r > best_rank
-            {
-                best_rank = r;
-                best_path = Some(tok.to_string());
+            if rank(tok).is_some() {
+                parts.push(tok.to_string());
             }
         }
-        out[k] = TopoInfo {
-            path: best_path,
-            nvlink: nv,
-        };
+        let paths = (!parts.is_empty()).then(|| parts.join("/"));
+        out[k] = TopoInfo { paths };
     }
     out
 }
@@ -349,10 +333,9 @@ mod tests {
         let text = "\t\u{1b}[4mGPU0\tGPU1\tGPU2\tGPU3\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\u{1b}[0m\nGPU0\t X \tPXB\tPXB\tPXB\t0-15\t0\t\tN/A\nGPU1\tPXB\t X \tPXB\tPXB\t0-15\t0\t\tN/A\nGPU2\tPXB\tPXB\t X \tPIX\t0-15\t0\t\tN/A\nGPU3\tPXB\tPXB\tPIX\t X \t0-15\t0\t\tN/A\n";
         let topo = parse_topo(text);
         assert_eq!(topo.len(), 4);
-        assert_eq!(topo[0].path.as_deref(), Some("PXB"));
-        assert_eq!(topo[2].path.as_deref(), Some("PIX"));
-        assert_eq!(topo[3].path.as_deref(), Some("PIX"));
-        assert_eq!(topo[3].nvlink, None);
+        assert_eq!(topo[0].paths.as_deref(), Some("PXB/PXB/PXB"));
+        assert_eq!(topo[2].paths.as_deref(), Some("PXB/PXB/PIX"));
+        assert_eq!(topo[3].paths.as_deref(), Some("PXB/PXB/PIX"));
     }
 
     #[test]
@@ -360,19 +343,18 @@ mod tests {
         let text = "\tGPU0\tGPU1\tGPU2\tGPU3\tCPU Affinity\tNUMA Affinity\nGPU0\t X \tPIX \tPHB \tSYS \t0-23\tN/A\nGPU1\tPIX \t X \tPHB \tSYS \t0-23\tN/A\nGPU2\tPHB \tPHB \t X \tSYS \t0-23\tN/A\nGPU3\tSYS \tSYS \tSYS \t X \t0-23\tN/A\nLegend:\n  X    = Self\n  SYS  = Path traversing multiple PCIe bridges\n";
         let topo = parse_topo(text);
         assert_eq!(topo.len(), 4);
-        assert_eq!(topo[0].path.as_deref(), Some("PIX"));
-        assert_eq!(topo[1].path.as_deref(), Some("PIX"));
-        assert_eq!(topo[2].path.as_deref(), Some("PHB"));
-        assert_eq!(topo[3].path.as_deref(), Some("SYS"));
-        assert_eq!(topo[0].nvlink, None);
+        assert_eq!(topo[0].paths.as_deref(), Some("PIX/PHB/SYS"));
+        assert_eq!(topo[1].paths.as_deref(), Some("PIX/PHB/SYS"));
+        assert_eq!(topo[2].paths.as_deref(), Some("PHB/PHB/SYS"));
+        assert_eq!(topo[3].paths.as_deref(), Some("SYS/SYS/SYS"));
     }
 
     #[test]
     fn parses_topo_nvlink() {
         let text = "\tGPU0\tGPU1\nGPU0\t X \tNV2\nGPU1\tNV2\t X \n";
         let topo = parse_topo(text);
-        assert_eq!(topo[0].nvlink.as_deref(), Some("NV2"));
-        assert_eq!(topo[0].path, None);
+        assert_eq!(topo[0].paths.as_deref(), Some("NV2"));
+        assert_eq!(topo[1].paths.as_deref(), Some("NV2"));
     }
 
     #[test]

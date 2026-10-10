@@ -119,7 +119,6 @@ pub struct GpuInfo {
     pub pcie_rx: Option<f64>,
     pub pcie_tx: Option<f64>,
     pub p2p: Option<String>,
-    pub nvlink: Option<String>,
 }
 
 #[derive(Default)]
