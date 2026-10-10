@@ -929,7 +929,7 @@ fn fmt_count(v: f64) -> String {
     if v >= 1_000_000.0 {
         format!("{:.1}M", v / 1e6)
     } else if v >= 1_000.0 {
-        format!("{:.1}k", v / 1e3)
+        format!("{:.0}k", v / 1e3)
     } else {
         format!("{}", v as u64)
     }
