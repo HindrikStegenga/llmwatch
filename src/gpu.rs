@@ -156,7 +156,7 @@ struct PcieInfo {
 
 #[derive(Default, Clone)]
 struct TopoInfo {
-    paths: Option<String>,
+    paths: Option<Vec<String>>,
 }
 
 fn strip_ansi(s: &str) -> String {
@@ -220,25 +220,28 @@ fn parse_topo(text: &str) -> Vec<TopoInfo> {
         let mut parts: Vec<String> = Vec::new();
         for j in 0..ngpus {
             if j == k {
+                parts.push("X".to_string());
                 continue;
             }
             let Some(tok) = tokens.get(1 + j) else {
+                parts.push("—".to_string());
                 continue;
             };
             if *tok == "X" {
+                parts.push("—".to_string());
                 continue;
             }
-            if tok.starts_with("NV")
-                && tok[2..].parse::<u8>().is_ok()
-            {
+            if tok.starts_with("NV") && tok[2..].parse::<u8>().is_ok() {
                 parts.push(tok.to_string());
                 continue;
             }
             if rank(tok).is_some() {
                 parts.push(tok.to_string());
+            } else {
+                parts.push("—".to_string());
             }
         }
-        let paths = (!parts.is_empty()).then(|| parts.join("/"));
+        let paths = (!parts.is_empty()).then_some(parts);
         out[k] = TopoInfo { paths };
     }
     out
@@ -333,9 +336,18 @@ mod tests {
         let text = "\t\u{1b}[4mGPU0\tGPU1\tGPU2\tGPU3\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\u{1b}[0m\nGPU0\t X \tPXB\tPXB\tPXB\t0-15\t0\t\tN/A\nGPU1\tPXB\t X \tPXB\tPXB\t0-15\t0\t\tN/A\nGPU2\tPXB\tPXB\t X \tPIX\t0-15\t0\t\tN/A\nGPU3\tPXB\tPXB\tPIX\t X \t0-15\t0\t\tN/A\n";
         let topo = parse_topo(text);
         assert_eq!(topo.len(), 4);
-        assert_eq!(topo[0].paths.as_deref(), Some("PXB/PXB/PXB"));
-        assert_eq!(topo[2].paths.as_deref(), Some("PXB/PXB/PIX"));
-        assert_eq!(topo[3].paths.as_deref(), Some("PXB/PXB/PIX"));
+        assert_eq!(
+            topo[0].paths,
+            Some(vec!["X".to_string(), "PXB".into(), "PXB".into(), "PXB".into()])
+        );
+        assert_eq!(
+            topo[2].paths,
+            Some(vec!["PXB".into(), "PXB".into(), "X".to_string(), "PIX".into()])
+        );
+        assert_eq!(
+            topo[3].paths,
+            Some(vec!["PXB".into(), "PXB".into(), "PIX".into(), "X".to_string()])
+        );
     }
 
     #[test]
@@ -343,18 +355,36 @@ mod tests {
         let text = "\tGPU0\tGPU1\tGPU2\tGPU3\tCPU Affinity\tNUMA Affinity\nGPU0\t X \tPIX \tPHB \tSYS \t0-23\tN/A\nGPU1\tPIX \t X \tPHB \tSYS \t0-23\tN/A\nGPU2\tPHB \tPHB \t X \tSYS \t0-23\tN/A\nGPU3\tSYS \tSYS \tSYS \t X \t0-23\tN/A\nLegend:\n  X    = Self\n  SYS  = Path traversing multiple PCIe bridges\n";
         let topo = parse_topo(text);
         assert_eq!(topo.len(), 4);
-        assert_eq!(topo[0].paths.as_deref(), Some("PIX/PHB/SYS"));
-        assert_eq!(topo[1].paths.as_deref(), Some("PIX/PHB/SYS"));
-        assert_eq!(topo[2].paths.as_deref(), Some("PHB/PHB/SYS"));
-        assert_eq!(topo[3].paths.as_deref(), Some("SYS/SYS/SYS"));
+        assert_eq!(
+            topo[0].paths,
+            Some(vec!["X".to_string(), "PIX".into(), "PHB".into(), "SYS".into()])
+        );
+        assert_eq!(
+            topo[1].paths,
+            Some(vec!["PIX".into(), "X".to_string(), "PHB".into(), "SYS".into()])
+        );
+        assert_eq!(
+            topo[2].paths,
+            Some(vec!["PHB".into(), "PHB".into(), "X".to_string(), "SYS".into()])
+        );
+        assert_eq!(
+            topo[3].paths,
+            Some(vec!["SYS".into(), "SYS".into(), "SYS".into(), "X".to_string()])
+        );
     }
 
     #[test]
     fn parses_topo_nvlink() {
         let text = "\tGPU0\tGPU1\nGPU0\t X \tNV2\nGPU1\tNV2\t X \n";
         let topo = parse_topo(text);
-        assert_eq!(topo[0].paths.as_deref(), Some("NV2"));
-        assert_eq!(topo[1].paths.as_deref(), Some("NV2"));
+        assert_eq!(
+            topo[0].paths,
+            Some(vec!["X".to_string(), "NV2".into()])
+        );
+        assert_eq!(
+            topo[1].paths,
+            Some(vec!["NV2".into(), "X".to_string()])
+        );
     }
 
     #[test]

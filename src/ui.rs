@@ -792,21 +792,52 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
     }
 
     let bold_hdr = Style::default().add_modifier(Modifier::BOLD);
-    let header = Row::new(vec![
+    let peer_count = gs
+        .gpus
+        .first()
+        .and_then(|g| g.p2p.as_ref().map(Vec::len))
+        .unwrap_or(0);
+    let mut header_cells = vec![
         Cell::from(Text::from(Span::styled("GPU", bold_hdr))),
         Cell::from(Text::from(Span::styled("Name", bold_hdr))),
-        Cell::from(Text::from(Span::styled(format!("{:>5}", "Temp"), bold_hdr))),
-        Cell::from(Text::from(Span::styled(format!("{:>5}", "MemT"), bold_hdr))),
-        Cell::from(Text::from(Span::styled("Memory", bold_hdr))),
-        Cell::from(Text::from(Span::styled(format!("{:>5}", "Util"), bold_hdr))),
-        Cell::from(Text::from(Span::styled(format!("{:>13}", "Power"), bold_hdr))),
-        Cell::from(Text::from(Span::styled(format!("{:>6}", "PCIe"), bold_hdr))),
-        Cell::from(Text::from(Span::styled(format!("{:>13}", "RX/TX"), bold_hdr))),
-        Cell::from(Text::from(Span::styled(format!("{:>12}", "P2P"), bold_hdr))),
-    ]);
-    let widths = [
-        Constraint::Length(4),
-        Constraint::Min(8),
+    ];
+    for j in 0..peer_count {
+        header_cells.push(Cell::from(Text::from(Span::styled(
+            format!("→{j}"),
+            bold_hdr,
+        ))));
+    }
+    header_cells.push(Cell::from(Text::from(Span::styled(
+        format!("{:>5}", "Temp"),
+        bold_hdr,
+    ))));
+    header_cells.push(Cell::from(Text::from(Span::styled(
+        format!("{:>5}", "MemT"),
+        bold_hdr,
+    ))));
+    header_cells.push(Cell::from(Text::from(Span::styled("Memory", bold_hdr))));
+    header_cells.push(Cell::from(Text::from(Span::styled(
+        format!("{:>5}", "Util"),
+        bold_hdr,
+    ))));
+    header_cells.push(Cell::from(Text::from(Span::styled(
+        format!("{:>13}", "Power"),
+        bold_hdr,
+    ))));
+    header_cells.push(Cell::from(Text::from(Span::styled(
+        format!("{:>6}", "PCIe"),
+        bold_hdr,
+    ))));
+    header_cells.push(Cell::from(Text::from(Span::styled(
+        format!("{:>13}", "RX/TX"),
+        bold_hdr,
+    ))));
+    let header = Row::new(header_cells);
+    let mut widths = vec![Constraint::Length(4), Constraint::Min(8)];
+    for _ in 0..peer_count {
+        widths.push(Constraint::Length(4));
+    }
+    widths.extend([
         Constraint::Length(5),
         Constraint::Length(5),
         Constraint::Length(18),
@@ -814,10 +845,9 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
         Constraint::Length(13),
         Constraint::Length(6),
         Constraint::Length(13),
-        Constraint::Length(12),
-    ];
+    ]);
 
-    let rows = gs.gpus.iter().map(gpu_row);
+    let rows = gs.gpus.iter().map(|g| gpu_row(g, peer_count));
     let table = Table::new(rows, widths)
         .block(block)
         .header(header)
@@ -825,7 +855,49 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
     f.render_widget(table, area);
 }
 
-fn gpu_row(g: &GpuInfo) -> Row<'static> {
+fn gpu_row(g: &GpuInfo, peer_count: usize) -> Row<'static> {
+    let mut cells = vec![
+        Cell::from(Text::from(Span::raw(format!("{}", g.index)))),
+        Cell::from(Text::from(Span::raw(g.name.clone()))),
+    ];
+    match g.p2p.as_ref() {
+        Some(paths) => {
+            for j in 0..peer_count {
+                let cell = if j == g.index as usize {
+                    Cell::from(Text::from(Span::styled("·", dim())))
+                } else {
+                    match paths.get(j).map(String::as_str) {
+                        Some(p) if p != "—" => {
+                            let color = if p.starts_with("NV") {
+                                ACCENT
+                            } else if p == "PIX" || p == "PXB" {
+                                OK
+                            } else {
+                                WARN
+                            };
+                            Cell::from(Text::from(Span::styled(
+                                format!("{p:>4}"),
+                                Style::default().fg(color),
+                            )))
+                        }
+                        _ => Cell::from(Text::from(Span::styled(
+                            format!("{:>4}", "—"),
+                            dim(),
+                        ))),
+                    }
+                };
+                cells.push(cell);
+            }
+        }
+        None => {
+            for _ in 0..peer_count {
+                cells.push(Cell::from(Text::from(Span::styled(
+                    format!("{:>4}", "—"),
+                    dim(),
+                ))));
+            }
+        }
+    }
     let temp = match g.temp {
         Some(t) => Span::styled(format!("{t:>5.0}"), temp_style(t)),
         None => Span::styled(format!("{:>5}", "—"), dim()),
@@ -872,40 +944,14 @@ fn gpu_row(g: &GpuInfo) -> Row<'static> {
         ]),
         _ => Line::from(Span::styled(format!("{:>13}", "—"), dim())),
     };
-    let p2p = match g.p2p.as_deref() {
-        Some(paths) => {
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            let pad = 12usize.saturating_sub(paths.chars().count());
-            spans.push(Span::raw(" ".repeat(pad)));
-            for (i, seg) in paths.split('/').enumerate() {
-                if i > 0 {
-                    spans.push(Span::styled("/", dim()));
-                }
-                let color = if seg.starts_with("NV") {
-                    ACCENT
-                } else if seg == "PIX" || seg == "PXB" {
-                    OK
-                } else {
-                    WARN
-                };
-                spans.push(Span::styled(seg.to_string(), Style::default().fg(color)));
-            }
-            Line::from(spans)
-        }
-        _ => Line::from(Span::styled(format!("{:>12}", "—"), dim())),
-    };
-    Row::new(vec![
-        Cell::from(Text::from(Span::raw(format!("{}", g.index)))),
-        Cell::from(Text::from(Span::raw(g.name.clone()))),
-        Cell::from(Text::from(temp)),
-        Cell::from(Text::from(memt)),
-        Cell::from(Text::from(mem)),
-        Cell::from(Text::from(util)),
-        Cell::from(Text::from(power)),
-        Cell::from(Text::from(pcie)),
-        Cell::from(Text::from(link)),
-        Cell::from(Text::from(p2p)),
-    ])
+    cells.push(Cell::from(Text::from(temp)));
+    cells.push(Cell::from(Text::from(memt)));
+    cells.push(Cell::from(Text::from(mem)));
+    cells.push(Cell::from(Text::from(util)));
+    cells.push(Cell::from(Text::from(power)));
+    cells.push(Cell::from(Text::from(pcie)));
+    cells.push(Cell::from(Text::from(link)));
+    Row::new(cells)
 }
 
 fn temp_style(t: f64) -> Style {
