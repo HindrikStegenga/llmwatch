@@ -17,8 +17,13 @@ const ACCENT: Color = Color::Rgb(189, 147, 249);
 
 pub fn draw(f: &mut Frame, state: &AppState) {
     let area = f.area();
+    let header_h = if state.vllm.lock().unwrap().last_err.is_some() {
+        4
+    } else {
+        3
+    };
     let outer = Layout::vertical([
-        Constraint::Length(4),
+        Constraint::Length(header_h),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
@@ -75,7 +80,7 @@ fn draw_header(f: &mut Frame, state: &AppState, area: Rect) {
     } else {
         ("CONNECTING", WARN)
     };
-    let l1 = vec![
+    let l1_left = vec![
         Span::styled(" llmwatch ", bold(PROMPT)),
         Span::raw(state.vllm_url.clone()),
         Span::raw("  ·  gpu: "),
@@ -86,28 +91,31 @@ fn draw_header(f: &mut Frame, state: &AppState, area: Rect) {
                 .unwrap_or_else(|| "off (--ssh host)".into()),
         ),
     ];
-    let mut left = vec![
-        Span::raw(match vs.last_ok.map(|t| t.elapsed().as_secs_f64()) {
-            Some(age) => format!(" updated {age:.1}s ago"),
-            None => " never updated".to_string(),
-        }),
-        Span::raw(format!("  ·  interval {:.1}s", state.interval_secs())),
-    ];
-    if let Some(err) = &vs.last_err {
-        left.push(Span::styled(
-            format!("  ·  {err}"),
-            Style::default().fg(CRIT),
-        ));
-    }
-    let left_len: usize = left.iter().map(|s| s.content.chars().count()).sum();
+    let mut right = vec![Span::raw(match vs.last_ok.map(|t| t.elapsed().as_secs_f64()) {
+        Some(age) => format!(
+            " updated {age:.1}s ago · interval {:.1}s ",
+            state.interval_secs()
+        ),
+        None => format!(" never updated · interval {:.1}s ", state.interval_secs()),
+    })];
+    let left_len: usize = l1_left.iter().map(|s| s.content.chars().count()).sum();
+    let right_len: usize =
+        right.iter().map(|s| s.content.chars().count()).sum::<usize>() + status.chars().count() + 2;
     let inner_w = area.width.saturating_sub(2) as usize;
-    let pad = inner_w
-        .saturating_sub(left_len + status.chars().count() + 2)
-        .max(1);
-    let mut l2 = left;
-    l2.push(Span::raw(" ".repeat(pad)));
-    l2.push(Span::styled(format!(" {status} "), bold(color)));
-    let p = Paragraph::new(vec![Line::from(l1), Line::from(l2)]).block(
+    let pad = inner_w.saturating_sub(left_len + right_len).max(1);
+    let mut l1 = l1_left;
+    l1.push(Span::raw(" ".repeat(pad)));
+    l1.extend(right);
+    l1.push(Span::styled(format!(" {status} "), bold(color)));
+
+    let mut lines = vec![Line::from(l1)];
+    if let Some(err) = &vs.last_err {
+        lines.push(Line::from(vec![Span::styled(
+            format!(" {err}"),
+            Style::default().fg(CRIT),
+        )]));
+    }
+    let p = Paragraph::new(lines).block(
         Block::bordered().title(Span::styled(" vLLM monitor ", bold(Color::White))),
     );
     f.render_widget(p, area);
