@@ -11,10 +11,14 @@ const Q_MARKER: &str = "---LLMWATCH-Q---";
 const T_MARKER: &str = "---LLMWATCH-T---";
 
 pub async fn fetch_loop(state: Arc<AppState>, host: String, timeout_secs: f64) {
+    let mut topo_cache: Option<String> = None;
     loop {
         if !state.is_paused() {
-            match fetch(&host, timeout_secs).await {
-                Ok(gpus) => {
+            match fetch(&host, timeout_secs, topo_cache.as_deref()).await {
+                Ok((gpus, fresh_topo)) => {
+                    if fresh_topo.is_some() {
+                        topo_cache = fresh_topo;
+                    }
                     let mut gs = state.gpu.lock().unwrap();
                     gs.gpus = gpus;
                     gs.last_ok = Some(std::time::Instant::now());
@@ -34,20 +38,36 @@ pub async fn fetch_loop(state: Arc<AppState>, host: String, timeout_secs: f64) {
     }
 }
 
-async fn fetch(host: &str, timeout_secs: f64) -> anyhow::Result<Vec<GpuInfo>> {
+async fn fetch(
+    host: &str,
+    timeout_secs: f64,
+    topo_cache: Option<&str>,
+) -> anyhow::Result<(Vec<GpuInfo>, Option<String>)> {
     let script = |query: &str| {
-        format!(
-            "nvidia-smi --query-gpu={query} --format=csv,noheader,nounits && echo '{Q_MARKER}' && nvidia-smi -q && echo '{T_MARKER}' && (nvidia-smi topo -m || true)"
-        )
+        let mut s = format!(
+            "nvidia-smi --query-gpu={query} --format=csv,noheader,nounits && echo '{Q_MARKER}' && nvidia-smi -q"
+        );
+        if topo_cache.is_none() {
+            s.push_str(&format!(
+                " && echo '{T_MARKER}' && (nvidia-smi topo -m || true)"
+            ));
+        }
+        s
     };
-    match run_ssh(host, &script(QUERY_BASE), timeout_secs).await {
-        Ok(text) => parse(&text),
+    let text = match run_ssh(host, &script(QUERY_BASE), timeout_secs).await {
+        Ok(text) => text,
         Err(first) => {
             let text = run_ssh(host, &script(QUERY_PLAIN), timeout_secs).await?;
             let _ = first;
-            parse(&text)
+            text
         }
-    }
+    };
+    let (csv, q, topo_sec) = split_sections(&text);
+    let fresh = topo_sec
+        .as_deref()
+        .filter(|t| !parse_topo(t).is_empty());
+    let gpus = build_gpus(&csv, &q, fresh.or(topo_cache))?;
+    Ok((gpus, fresh.map(str::to_string)))
 }
 
 async fn run_ssh(host: &str, script: &str, timeout_secs: f64) -> anyhow::Result<String> {
@@ -75,17 +95,20 @@ async fn run_ssh(host: &str, script: &str, timeout_secs: f64) -> anyhow::Result<
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-pub fn parse(text: &str) -> anyhow::Result<Vec<GpuInfo>> {
+fn split_sections(text: &str) -> (String, String, Option<String>) {
     let (csv, rest) = match text.split_once(Q_MARKER) {
-        Some((c, r)) => (c, r),
-        None => (text, ""),
+        Some((c, r)) => (c.to_string(), r.to_string()),
+        None => (text.to_string(), String::new()),
     };
-    let (q, topo_text) = match rest.split_once(T_MARKER) {
-        Some((q, t)) => (q, t),
-        None => (rest, ""),
-    };
+    match rest.split_once(T_MARKER) {
+        Some((q, t)) => (csv, q.to_string(), Some(t.to_string())),
+        None => (csv, rest, None),
+    }
+}
+
+fn build_gpus(csv: &str, q: &str, topo_text: Option<&str>) -> anyhow::Result<Vec<GpuInfo>> {
     let pcie = parse_q_pcie(q);
-    let topo = parse_topo(topo_text);
+    let topo = topo_text.map(parse_topo).unwrap_or_default();
     let mut gpus = Vec::new();
     for (i, line) in csv.lines().enumerate() {
         let line = line.trim();
@@ -298,6 +321,12 @@ fn num(s: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(text: &str) -> anyhow::Result<Vec<GpuInfo>> {
+        let (csv, q, topo_sec) = split_sections(text);
+        let topo_text = topo_sec.as_deref().filter(|t| !parse_topo(t).is_empty());
+        build_gpus(&csv, &q, topo_text)
+    }
 
     #[test]
     fn parses_nvidia_smi_csv() {
