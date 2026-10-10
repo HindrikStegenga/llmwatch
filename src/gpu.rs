@@ -138,6 +138,24 @@ struct TopoInfo {
     nvlink: Option<String>,
 }
 
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            while let Some(&n) = chars.peek() {
+                chars.next();
+                if n.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn parse_topo(text: &str) -> Vec<TopoInfo> {
     fn rank(tok: &str) -> Option<u8> {
         match tok {
@@ -153,6 +171,7 @@ fn parse_topo(text: &str) -> Vec<TopoInfo> {
     };
     let mut ngpus = 0usize;
     for line in text.lines() {
+        let line = strip_ansi(line);
         let tokens: Vec<&str> = line.split('\t').map(str::trim).collect();
         if tokens.first().is_some_and(|t| t.is_empty()) {
             let count = tokens.iter().filter(|t| is_gpu_row(t)).count();
@@ -163,6 +182,7 @@ fn parse_topo(text: &str) -> Vec<TopoInfo> {
     }
     let mut out = vec![TopoInfo::default(); ngpus];
     for line in text.lines() {
+        let line = strip_ansi(line);
         let tokens: Vec<&str> = line.split('\t').map(str::trim).collect();
         let Some(first) = tokens.first() else {
             continue;
@@ -293,6 +313,17 @@ mod tests {
         assert_eq!(gpus[0].power, Some(142.5));
         assert_eq!(gpus[0].power_limit, Some(450.0));
         assert_eq!(gpus[0].pcie_gen, None);
+    }
+
+    #[test]
+    fn parses_topo_with_ansi_codes() {
+        let text = "\t\u{1b}[4mGPU0\tGPU1\tGPU2\tGPU3\tCPU Affinity\tNUMA Affinity\tGPU NUMA ID\u{1b}[0m\nGPU0\t X \tPXB\tPXB\tPXB\t0-15\t0\t\tN/A\nGPU1\tPXB\t X \tPXB\tPXB\t0-15\t0\t\tN/A\nGPU2\tPXB\tPXB\t X \tPIX\t0-15\t0\t\tN/A\nGPU3\tPXB\tPXB\tPIX\t X \t0-15\t0\t\tN/A\n";
+        let topo = parse_topo(text);
+        assert_eq!(topo.len(), 4);
+        assert_eq!(topo[0].path.as_deref(), Some("PXB"));
+        assert_eq!(topo[2].path.as_deref(), Some("PIX"));
+        assert_eq!(topo[3].path.as_deref(), Some("PIX"));
+        assert_eq!(topo[3].nvlink, None);
     }
 
     #[test]
