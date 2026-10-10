@@ -279,50 +279,80 @@ fn rate_chart(
     };
     f.render_widget(chart, rows[0]);
 
+    let w = inner.width as usize;
     let mut samples: Vec<f64> = raw.iter().filter(|v| **v > 0.0).copied().collect();
-    if !samples.is_empty() {
+    let have = !samples.is_empty();
+    if have {
         samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        f.render_widget(
-            Paragraph::new(percentile_line(
-                &samples,
-                color,
-                if pts_c.is_empty() { None } else { Some("compute+cached") },
-            )),
-            rows[1],
-        );
     }
+    let ptag = if pts_c.is_empty() {
+        None
+    } else {
+        Some("compute+cached")
+    };
+    f.render_widget(
+        Paragraph::new(percentile_line(
+            have.then_some(&samples[..]),
+            color,
+            ptag,
+            w,
+        )),
+        rows[1],
+    );
     if !pts_c.is_empty() {
         let mut csamples: Vec<f64> = raw_c.iter().filter(|v| **v > 0.0).copied().collect();
-        if !csamples.is_empty() {
+        let chave = !csamples.is_empty();
+        if chave {
             csamples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            f.render_widget(
-                Paragraph::new(percentile_line(&csamples, WARN, Some("computed"))),
-                rows[2],
-            );
         }
+        f.render_widget(
+            Paragraph::new(percentile_line(
+                chave.then_some(&csamples[..]),
+                WARN,
+                Some("computed"),
+                w,
+            )),
+            rows[2],
+        );
     }
 }
 
-fn percentile_line(samples: &[f64], color: Color, tag: Option<&str>) -> Line<'static> {
+fn percentile_line(
+    samples: Option<&[f64]>,
+    color: Color,
+    tag: Option<&str>,
+    width: usize,
+) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
     if let Some(tag) = tag {
-        spans.push(Span::styled(format!(" {tag} "), bold(color)));
+        let t = format!(" {tag} ");
+        used += t.chars().count();
+        spans.push(Span::styled(t, bold(color)));
     }
-    let max = *samples.last().unwrap();
-    let stats = [
-        ("min", samples[0]),
-        ("p25", percentile(samples, 0.25)),
-        ("p50", percentile(samples, 0.5)),
-        ("p75", percentile(samples, 0.75)),
-        ("p90", percentile(samples, 0.9)),
-        ("p95", percentile(samples, 0.95)),
-        ("p99", percentile(samples, 0.99)),
-        ("max", max),
-    ];
-    for (label, value) in stats {
-        spans.push(Span::styled(format!(" {label} "), dim()));
+    let col = width.saturating_sub(used) / 8;
+    let vw = col.saturating_sub(4);
+    let labels = ["min", "p25", "p50", "p75", "p90", "p95", "p99", "max"];
+    let values: [Option<f64>; 8] = match samples {
+        Some(s) if !s.is_empty() => [
+            Some(s[0]),
+            Some(percentile(s, 0.25)),
+            Some(percentile(s, 0.5)),
+            Some(percentile(s, 0.75)),
+            Some(percentile(s, 0.9)),
+            Some(percentile(s, 0.95)),
+            Some(percentile(s, 0.99)),
+            Some(*s.last().unwrap()),
+        ],
+        _ => [None; 8],
+    };
+    for (label, value) in labels.iter().zip(values.iter()) {
+        let vs = value
+            .map(|v| fmt_count(v))
+            .unwrap_or_else(|| "-".to_string());
+        spans.push(Span::styled(format!("{label:<3} "), dim()));
         spans.push(Span::styled(
-            format!("{value:.0}"),
+            format!("{vs:>vw$}"),
             Style::default().fg(color),
         ));
     }
