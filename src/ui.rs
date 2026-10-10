@@ -91,7 +91,7 @@ fn draw_header(f: &mut Frame, state: &AppState, area: Rect) {
                 .unwrap_or_else(|| "off (--ssh host)".into()),
         ),
     ];
-    let mut right = vec![Span::raw(match vs.last_ok.map(|t| t.elapsed().as_secs_f64()) {
+    let right = vec![Span::raw(match vs.last_ok.map(|t| t.elapsed().as_secs_f64()) {
         Some(age) => format!(
             " updated {age:.1}s ago · interval {:.1}s ",
             state.interval_secs()
