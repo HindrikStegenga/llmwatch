@@ -797,9 +797,23 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
         .first()
         .and_then(|g| g.p2p.as_ref().map(Vec::len))
         .unwrap_or(0);
+    let name_w = gs
+        .gpus
+        .iter()
+        .map(|g| g.name.chars().count())
+        .max()
+        .unwrap_or(8)
+        .clamp(8, 26);
+    let spacer_w = area
+        .width
+        .saturating_sub(79 + name_w as u16 + 5 * peer_count as u16)
+        / 2;
+    let spacer_w = u16::try_from(spacer_w).unwrap_or(0);
+    let empty = || Cell::from(Text::from(""));
     let mut header_cells = vec![
         Cell::from(Text::from(Span::styled("GPU", bold_hdr))),
         Cell::from(Text::from(Span::styled("Name", bold_hdr))),
+        empty(),
     ];
     for j in 0..peer_count {
         header_cells.push(Cell::from(Text::from(Span::styled(
@@ -807,6 +821,7 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
             bold_hdr,
         ))));
     }
+    header_cells.push(empty());
     header_cells.push(Cell::from(Text::from(Span::styled(
         format!("{:>5}", "Temp"),
         bold_hdr,
@@ -833,10 +848,15 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
         bold_hdr,
     ))));
     let header = Row::new(header_cells);
-    let mut widths = vec![Constraint::Length(4), Constraint::Min(8)];
+    let mut widths = vec![
+        Constraint::Length(4),
+        Constraint::Length(name_w as u16),
+        Constraint::Length(spacer_w),
+    ];
     for _ in 0..peer_count {
         widths.push(Constraint::Length(4));
     }
+    widths.push(Constraint::Length(spacer_w));
     widths.extend([
         Constraint::Length(5),
         Constraint::Length(5),
