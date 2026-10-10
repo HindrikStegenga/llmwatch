@@ -11,7 +11,11 @@ are collected over SSH via `nvidia-smi`.
 ## Panels
 
 - **Throughput** — prompt tok/s (log scale, cache hits included) overlaid with the *true* computed
-  prefill rate, generation tok/s, and percentile lines (min → max, zero samples ignored) for each series
+  prefill rate, generation tok/s, and percentile lines (min → max, zero samples ignored) for each series.
+  Rates are computed over a sliding window (`w` cycles 1s/5s/10s/30s, default 10s) because the engine
+  updates its token counters once per completed request rather than per chunk — per-poll deltas would
+  render each request as a single impossible spike. A `prefilling` badge appears while requests are
+  running but no tokens have been emitted yet (the engine is mid-prefill / state-restore)
 - **Requests** — running / waiting (with wait reason), preemptions, req/s, tool-call rate, batch size,
   HTTP p50/p99 latency, error count
 - **Latency** — TTFT avg/p50/p90/p99, TPOT avg, per-stream tok/s, E2E p99, prefill/decode averages
@@ -36,8 +40,8 @@ cargo build --release
 | `--interval` | `1.0` | Poll interval in seconds (0.5–30, adjustable at runtime) |
 | `--timeout` | `5.0` | HTTP request timeout in seconds |
 
-Keys: `q` quit · `r` refresh now · `p` pause · `+`/`-` poll interval · `m` list all metric names the
-server exposes · `j`/`k` or arrows scroll the metric list.
+Keys: `q` quit · `r` refresh now · `p` pause · `+`/`-` poll interval · `w` rate window ·
+`m` list all metric names the server exposes · `j`/`k` or arrows scroll the metric list.
 
 ## Requirements
 

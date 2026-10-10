@@ -133,10 +133,22 @@ fn draw_throughput(f: &mut Frame, state: &AppState, prompt_area: Rect, gen_area:
     } else {
         None
     };
+    let window = format!("{}", state.window_secs() as u64);
+    let prefill = if state.is_paused() {
+        None
+    } else {
+        vs.prefill_elapsed()
+    };
+    let status = prefill.map(|el| {
+        Span::styled(
+            format!("· prefilling {el:.1}s "),
+            Style::default().fg(ACCENT),
+        )
+    });
     rate_chart(
         f,
         prompt_area,
-        "Prompt tok/s (incl. cached)",
+        &format!("Prompt tok/s · {window}s window (incl. cached)"),
         PROMPT,
         &vs.hist_t,
         &vs.hist_prompt,
@@ -144,11 +156,12 @@ fn draw_throughput(f: &mut Frame, state: &AppState, prompt_area: Rect, gen_area:
         compute_vals,
         vs.compute_tps,
         true,
+        status,
     );
     rate_chart(
         f,
         gen_area,
-        "Generation tok/s",
+        &format!("Generation tok/s · {window}s window"),
         GEN,
         &vs.hist_t,
         &vs.hist_gen,
@@ -156,6 +169,7 @@ fn draw_throughput(f: &mut Frame, state: &AppState, prompt_area: Rect, gen_area:
         None,
         None,
         false,
+        None,
     );
 }
 
@@ -171,6 +185,7 @@ fn rate_chart(
     compute_vals: Option<&[f64]>,
     compute_current: Option<f64>,
     log_scale: bool,
+    status: Option<Span<'static>>,
 ) {
     let mut title_spans = vec![
         Span::styled(format!(" {title} "), bold(Color::White)),
@@ -182,6 +197,9 @@ fn rate_chart(
             format!("{c:.0} "),
             Style::default().fg(Color::White),
         ));
+    }
+    if let Some(s) = status {
+        title_spans.push(s);
     }
     let block = Block::bordered().title(Line::from(title_spans));
     let inner = block.inner(area);
@@ -1081,6 +1099,8 @@ fn draw_footer(f: &mut Frame, state: &AppState, area: Rect) {
         Span::raw(if state.is_paused() { " resume  " } else { " pause  " }),
         Span::styled("+/-", key),
         Span::raw(format!(" interval ({:.1}s)", state.interval_secs())),
+        Span::styled("  w", key),
+        Span::raw(format!(" window ({:.0}s)", state.window_secs())),
         Span::styled("  m", key),
         Span::raw(" metrics"),
     ]);

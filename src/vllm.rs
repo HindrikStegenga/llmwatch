@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -27,44 +28,61 @@ fn update(state: &AppState, metrics: VllmMetrics, names: Vec<String>) {
     let mut vs = state.vllm.lock().unwrap();
     vs.all_names = names;
     let now = Instant::now();
+    let window = state.window_secs();
     if let Some(start) = metrics.process_start_time
         && vs.engine_start != Some(start)
     {
         vs.engine_start = Some(start);
-        vs.prev = None;
+        vs.win.clear();
+        vs.win_compute.clear();
+        vs.last_progress = None;
         vs.spec_prev = None;
         vs.req_prev = None;
         vs.tool_prev = None;
         vs.cpu_prev = None;
-        vs.compute_prev = None;
     }
+    if vs.last_progress.is_none() {
+        vs.last_progress = Some(now);
+    }
+    // The engine's token counters are lump-sum (updated once per completed
+    // request, not per chunk), so per-poll deltas spike to the full prompt
+    // size. Rate everything over a sliding window instead.
     let mut compute_rate: Option<f64> = None;
     if let Some(pc) = metrics.prompt_compute_total {
-        if let Some((t0, c0)) = vs.compute_prev {
-            let dt = now.duration_since(t0).as_secs_f64();
-            if dt > 0.05 {
-                compute_rate = Some((pc - c0).max(0.0) / dt);
-                vs.compute_tps = compute_rate;
-            }
+        vs.win_compute.push_back((now, pc));
+        prune_window(&mut vs.win_compute, window, now, |s| s.0);
+        if let (Some(&(t0, c0)), Some(&(t1, c1))) =
+            (vs.win_compute.front(), vs.win_compute.back())
+            && let Some(r) = delta_rate(t0, c0, t1, c1)
+        {
+            compute_rate = Some(r);
+            vs.compute_tps = compute_rate;
         }
-        vs.compute_prev = Some((now, pc));
     }
     let compute_push = if metrics.prompt_compute_total.is_some() {
         Some(compute_rate.unwrap_or(0.0))
     } else {
         None
     };
-    if let Some((t0, p0, g0)) = vs.prev {
-        let dt = now.duration_since(t0).as_secs_f64();
-        if dt > 0.05 {
-            let rates = Rates {
-                prompt_tps: (metrics.prompt_tokens_total - p0).max(0.0) / dt,
-                gen_tps: (metrics.generation_tokens_total - g0).max(0.0) / dt,
-            };
-            vs.rates = Some(rates);
-            push(&mut vs.prompt_hist, rates.prompt_tps);
-            push(&mut vs.gen_hist, rates.gen_tps);
-            push_history(&mut vs, now, rates, compute_push);
+    vs.win.push_back((
+        now,
+        metrics.prompt_tokens_total,
+        metrics.generation_tokens_total,
+    ));
+    prune_window(&mut vs.win, window, now, |s| s.0);
+    if let (Some(&(t0, p0, g0)), Some(&(t1, p1, g1))) = (vs.win.front(), vs.win.back())
+        && let (Some(pr), Some(gr)) = (delta_rate(t0, p0, t1, p1), delta_rate(t0, g0, t1, g1))
+    {
+        let rates = Rates {
+            prompt_tps: pr,
+            gen_tps: gr,
+        };
+        vs.rates = Some(rates);
+        push(&mut vs.prompt_hist, rates.prompt_tps);
+        push(&mut vs.gen_hist, rates.gen_tps);
+        push_history(&mut vs, now, rates, compute_push);
+        if rates.prompt_tps + rates.gen_tps > 0.5 {
+            vs.last_progress = Some(now);
         }
     }
     if metrics.spec.counters
@@ -83,7 +101,6 @@ fn update(state: &AppState, metrics: VllmMetrics, names: Vec<String>) {
         }
         vs.spec_prev = Some((now, d, a, e.unwrap_or(0.0)));
     }
-    vs.prev = Some((now, metrics.prompt_tokens_total, metrics.generation_tokens_total));
     if let Some(total) = metrics.http_requests_total {
         if let Some((t0, r0)) = vs.req_prev {
             let dt = now.duration_since(t0).as_secs_f64();
@@ -145,6 +162,29 @@ fn push(hist: &mut Vec<u64>, value: f64) {
     if hist.len() > 240 {
         hist.remove(0);
     }
+}
+
+/// Drop samples older than `window` secs, always keeping the newest two so a
+/// rate can still be formed when the poll interval exceeds the window.
+fn prune_window<T>(
+    win: &mut VecDeque<T>,
+    window: f64,
+    now: Instant,
+    ts: impl Fn(&T) -> Instant,
+) {
+    while win.len() > 2
+        && now
+            .duration_since(ts(win.front().expect("non-empty")))
+            .as_secs_f64()
+            > window
+    {
+        win.pop_front();
+    }
+}
+
+fn delta_rate(t0: Instant, v0: f64, t1: Instant, v1: f64) -> Option<f64> {
+    let dt = t1.duration_since(t0).as_secs_f64();
+    (dt > 0.05).then_some((v1 - v0).max(0.0) / dt)
 }
 
 async fn fetch(
@@ -353,6 +393,48 @@ fn histogram(samples: &[prom::Sample], base: &str) -> Option<HistStats> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn window_rate_averages_lump_over_span() {
+        let now = Instant::now();
+        let mut win: VecDeque<(Instant, f64, f64)> = VecDeque::new();
+        win.push_back((now - Duration::from_secs(8), 0.0, 0.0));
+        win.push_back((now - Duration::from_secs(4), 0.0, 0.0));
+        // A whole request's tokens land in one lump at completion:
+        win.push_back((now, 44053.0, 100.0));
+        prune_window(&mut win, 10.0, now, |s| s.0);
+        assert_eq!(win.len(), 3);
+        let (t0, p0, g0) = *win.front().unwrap();
+        let (t1, p1, g1) = *win.back().unwrap();
+        let pr = delta_rate(t0, p0, t1, p1).unwrap();
+        let gr = delta_rate(t0, g0, t1, g1).unwrap();
+        // ~5.5k tok/s over the 8s span, not 44k in one poll:
+        assert!((pr - 44053.0 / 8.0).abs() < 10.0, "prompt rate {pr}");
+        assert!((gr - 100.0 / 8.0).abs() < 1.0, "gen rate {gr}");
+    }
+
+    #[test]
+    fn prune_keeps_two_samples_beyond_window() {
+        let now = Instant::now();
+        let mut win: VecDeque<(Instant, f64)> = VecDeque::new();
+        win.push_back((now - Duration::from_secs(60), 0.0));
+        win.push_back((now - Duration::from_secs(40), 10.0));
+        win.push_back((now - Duration::from_secs(20), 20.0));
+        win.push_back((now, 30.0));
+        prune_window(&mut win, 10.0, now, |s| s.0);
+        // Oldest two dropped, but never below two samples:
+        assert_eq!(win.len(), 2);
+        assert_eq!(win.front().unwrap().1, 20.0);
+    }
+
+    #[test]
+    fn delta_rate_rejects_tiny_spans_and_countershrink() {
+        let now = Instant::now();
+        assert!(delta_rate(now, 0.0, now, 10.0).is_none());
+        let later = now + Duration::from_millis(200);
+        assert_eq!(delta_rate(now, 10.0, later, 4.0).unwrap(), 0.0);
+    }
 
     #[test]
     fn extracts_dflash_style_spec_metrics() {

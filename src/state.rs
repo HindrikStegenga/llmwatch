@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -89,7 +90,12 @@ pub struct VllmState {
     pub hist_gen: Vec<f64>,
     pub hist_compute: Vec<f64>,
     pub(crate) hist_start: Option<Instant>,
-    pub(crate) prev: Option<(Instant, f64, f64)>,
+    /// (t, prompt_tokens_total, generation_tokens_total) samples for windowed rates.
+    pub(crate) win: VecDeque<(Instant, f64, f64)>,
+    /// (t, prompt_compute_total) samples for the windowed compute rate.
+    pub(crate) win_compute: VecDeque<(Instant, f64)>,
+    /// Last time windowed token rates were non-zero; drives the prefill indicator.
+    pub last_progress: Option<Instant>,
     pub spec_rates: Option<SpecRates>,
     pub(crate) spec_prev: Option<(Instant, f64, f64, f64)>,
     pub req_rate: Option<f64>,
@@ -99,8 +105,22 @@ pub struct VllmState {
     pub cpu_pct: Option<f64>,
     pub(crate) cpu_prev: Option<(Instant, f64)>,
     pub compute_tps: Option<f64>,
-    pub(crate) compute_prev: Option<(Instant, f64)>,
     pub(crate) engine_start: Option<f64>,
+}
+
+impl VllmState {
+    /// Some( elapsed_secs ) while requests are running but no tokens have been
+    /// emitted for a while — the engine is mid-prefill / state-restore, and the
+    /// fork's lump-sum counters cannot show progress yet.
+    pub fn prefill_elapsed(&self) -> Option<f64> {
+        let m = self.metrics.as_ref()?;
+        if m.running <= 0.0 || self.last_err.is_some() {
+            return None;
+        }
+        let lp = self.last_progress?;
+        let elapsed = lp.elapsed().as_secs_f64();
+        (elapsed > 2.0).then_some(elapsed)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -137,8 +157,12 @@ pub struct AppState {
     pub show_metrics: AtomicBool,
     pub metrics_scroll: AtomicUsize,
     interval: Mutex<f64>,
+    window: Mutex<f64>,
     pub refresh: tokio::sync::Notify,
 }
+
+pub const WINDOW_STEPS: [f64; 4] = [1.0, 5.0, 10.0, 30.0];
+pub const DEFAULT_WINDOW: f64 = 10.0;
 
 impl AppState {
     pub fn new(interval: f64) -> Self {
@@ -151,12 +175,25 @@ impl AppState {
             show_metrics: AtomicBool::new(false),
             metrics_scroll: AtomicUsize::new(0),
             interval: Mutex::new(interval.clamp(0.5, 30.0)),
+            window: Mutex::new(DEFAULT_WINDOW),
             refresh: tokio::sync::Notify::new(),
         }
     }
 
     pub fn interval_secs(&self) -> f64 {
         *self.interval.lock().unwrap()
+    }
+
+    pub fn window_secs(&self) -> f64 {
+        *self.window.lock().unwrap()
+    }
+
+    pub fn cycle_window(&self) {
+        let mut w = self.window.lock().unwrap();
+        *w = match WINDOW_STEPS.iter().position(|&s| s > *w + f64::EPSILON) {
+            Some(i) => WINDOW_STEPS[i],
+            None => WINDOW_STEPS[0],
+        };
     }
 
     pub fn bump_interval(&self, delta: f64) {

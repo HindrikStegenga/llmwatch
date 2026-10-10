@@ -101,6 +101,7 @@ async fn event_loop(
                         state.bump_interval(-0.5);
                         state.refresh.notify_waiters();
                     }
+                    KeyCode::Char('w') => state.cycle_window(),
                     KeyCode::Char('m') => state.toggle_metrics_popup(),
                     KeyCode::Char('j') | KeyCode::Down => state.scroll_metrics(1),
                     KeyCode::Char('k') | KeyCode::Up => state.scroll_metrics(-1),
