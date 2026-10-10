@@ -43,6 +43,7 @@ pub struct SpecRates {
 pub struct VllmMetrics {
     pub prompt_tokens_total: f64,
     pub generation_tokens_total: f64,
+    pub process_start_time: Option<f64>,
     pub prompt_compute_total: Option<f64>,
     pub running: f64,
     pub waiting: f64,
@@ -99,6 +100,7 @@ pub struct VllmState {
     pub(crate) cpu_prev: Option<(Instant, f64)>,
     pub compute_tps: Option<f64>,
     pub(crate) compute_prev: Option<(Instant, f64)>,
+    pub(crate) engine_start: Option<f64>,
 }
 
 #[derive(Debug, Clone)]

@@ -1,3 +1,4 @@
 /target
 /prefill-test*.txt
 .DS_Store
+/run.sh

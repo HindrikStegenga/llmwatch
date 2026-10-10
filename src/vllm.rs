@@ -27,6 +27,17 @@ fn update(state: &AppState, metrics: VllmMetrics, names: Vec<String>) {
     let mut vs = state.vllm.lock().unwrap();
     vs.all_names = names;
     let now = Instant::now();
+    if let Some(start) = metrics.process_start_time
+        && vs.engine_start != Some(start)
+    {
+        vs.engine_start = Some(start);
+        vs.prev = None;
+        vs.spec_prev = None;
+        vs.req_prev = None;
+        vs.tool_prev = None;
+        vs.cpu_prev = None;
+        vs.compute_prev = None;
+    }
     let mut compute_rate: Option<f64> = None;
     if let Some(pc) = metrics.prompt_compute_total {
         if let Some((t0, c0)) = vs.compute_prev {
@@ -208,6 +219,7 @@ fn extract_from(samples: &[prom::Sample]) -> VllmMetrics {
     VllmMetrics {
         prompt_tokens_total: scalar(samples, "vllm_prompt_tokens_total").unwrap_or(0.0),
         generation_tokens_total: scalar(samples, "vllm_generation_tokens_total").unwrap_or(0.0),
+        process_start_time: scalar(samples, "process_start_time_seconds"),
         prompt_compute_total: samples
             .iter()
             .find(|s| {
