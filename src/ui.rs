@@ -808,7 +808,6 @@ fn draw_gpus(f: &mut Frame, state: &AppState, area: Rect) {
         .width
         .saturating_sub(79 + name_w as u16 + 5 * peer_count as u16)
         / 2;
-    let spacer_w = u16::try_from(spacer_w).unwrap_or(0);
     let empty = || Cell::from(Text::from(""));
     let mut header_cells = vec![
         Cell::from(Text::from(Span::styled("GPU", bold_hdr))),
